@@ -7,3 +7,5 @@ Tulipani, LJ, Meyer, B, Larie, D, Solomon, AJ, McGinnis, RS. Metrics extracted f
 To run the script, please download the example dataset from () and unzip it into the same folder as the code in this repo. 
 
 Main entrypoint for the method is 30CST.m which can be run directly from the command line in Matlab. 
+
+Please direct questions to Dr. Ryan S. McGinnis - ryan.mcginnis@uvm.edu
