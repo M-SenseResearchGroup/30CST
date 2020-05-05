@@ -1,12 +1,11 @@
-%% 30CST
-% Written by Lindsey Tulipani - lindsey.tulipani@uvm.edu
-% October 31, 2019
-% This code computes accelerometer based metrics (including number of stands 
-% performed) using thigh and chest sensors to analyze the 30 sec repeated 
-% sit-to-stand functional test. 
-% *Note: This code does not take into consideration false starts/false stands. 
+%Written by: Lindsey Tulipani (03/06/19)
+%This code computes accelerometer based metrics (including number of stands performed) using thigh and chest sensors
+%to analyze the 30 sec repeated sit-to-stand functional test
 
-% Load example data
+clc
+clear all
+close all
+
 load('time_s.mat')
 load('time_cs.mat')
 load('th_acc_stat.mat')
@@ -14,6 +13,7 @@ load('th_acc_cs.mat')
 load('ch_acc_stat.mat')
 load('ch_acc_cs.mat')
 
+%-----Apply direction cosine matrix transformations-----------------
 %Rotate sensor frame to thigh frame
 accel_stat = mean([th_acc_stat(:,1),th_acc_stat(:,2),th_acc_stat(:,3)]',2);
 th_acc_stat_n = accel_stat/vecnorm(accel_stat);
@@ -21,7 +21,7 @@ z = [0 0 1]';
 [th_R] = getrot(th_acc_stat_n,z,'dcm');
 
 thigh_accel = th_R*[th_acc_cs(:,1),th_acc_cs(:,2),th_acc_cs(:,3)]';
-thigh_accel = thigh_accel';
+thigh_accel = [thigh_accel]';
 
 %Rotate sensor frame to chest frame
 g = mean([ch_acc_stat(:,1),ch_acc_stat(:,2),ch_acc_stat(:,3)]',2);
@@ -35,7 +35,7 @@ chest_accel = [chest_accel]';
 
 %Compute frequency characteristics of chest 
 Fs = 1/mean(diff(time_cs));
-[p,F] = pwelch(chest_accel(:,2),rectwin(round(5*Fs)),[],4096,Fs);
+[p,F] = pwelch(chest_accel(:,2),rectwin(5*Fs),[],4096,Fs);
 freq = [F,p];
 
 [freq_pks,locs_f_pks] = findpeaks(p);
@@ -50,11 +50,8 @@ Wp = ch_f/(Fs/2); % defining cutoff frequency in rad/samp
 ch_yaccel = filtfilt(b,a,chest_accel(:,2)); 
 ch_zaccel = filtfilt(b,a,chest_accel(:,3)); 
 
-%Compute chest angle
-ch_theta = rad2deg(atan2(ch_yaccel,ch_zaccel));
-
 %Compute frequency characteristics of thigh
-[p_th,F_th] = pwelch(thigh_accel(:,3),rectwin(round(3*Fs)),[],4096,Fs);
+[p_th,F_th] = pwelch(thigh_accel(:,3),rectwin(3*Fs),[],4096,Fs);
 [tfreq_pks,tlocs_f_pks] = findpeaks(p_th);
 th_f = F_th(tlocs_f_pks(2));
 
@@ -67,8 +64,42 @@ th_zaccel = filtfilt(b,a,thigh_accel(:,3));
 %Location of stands
 [pks_stand,locs_stand] = findpeaks(th_zaccel);
 
-%Number of repetitions performed
-num_reps = length(pks_stand);
+%Location of sits
+[pks_sit,locs_sit] = findpeaks(-th_zaccel);
+
+%Check if first stand is false stand
+if (locs_sit(1) < locs_stand(1)) || (pks_stand(1) < 0.5*mean(pks_stand)) 
+    th_zaccel = th_zaccel(locs_sit(1):end);
+    thigh_accel = thigh_accel((locs_sit(1):end),:);
+    time_cs = time_cs(locs_sit(1):end);
+    time_cs = time_cs - time_cs(1);
+    ch_yaccel = ch_yaccel(locs_sit(1):end);
+    ch_zaccel = ch_zaccel(locs_sit(1):end);
+    end
+
+%Compute chest angle
+ch_theta = rad2deg(atan2(ch_yaccel,ch_zaccel));
+[pks_stand,locs_stand] = findpeaks(th_zaccel);
+
+%check if on last attempt they stood more than halfway and count num reps
+if (th_zaccel(end)>th_zaccel(end-1)) && (th_zaccel(end) > 0.5*mean(pks_stand));
+    num_reps = length(pks_stand) + 1;
+else num_reps = length(pks_stand);
+end
+    
+%Check that thigh frequency is not lost in low freq signal - if so approx as num_reps/30sec
+
+th_f_check = num_reps/30;
+if th_f_check < th_f/1.5;
+    th_f = th_f_check;
+    n = 3; % filter order 
+    Wp = th_f/(Fs/2); 
+    [b,a] = butter(n,Wp,'low'); % 
+    th_zaccel = filtfilt(b,a,thigh_accel(:,3)); 
+
+    %Find New Location of stands
+    [pks_stand,locs_stand] = findpeaks(th_zaccel);
+end
 
 %Location of sits
 locs_sit=zeros(1,num_reps-1);
@@ -83,14 +114,10 @@ for k=1:(num_reps-1)
 end
 
 %Compute sit to stand transition times
-sit_stand_time = zeros(1,num_reps);
-
-for k=1:num_reps
+sit_stand_time = zeros(1,num_reps-1);
+for k=1:num_reps-1
 if k==1 
     sit_stand_time(k) = time_cs(locs_stand(k))-time_cs(k);
-end
-if k == num_reps
-    sit_stand_time(k) = time_cs(locs_stand(k))-time_cs(locs_sit(k-1));
 end
 
 if 1 < k && k < num_reps
@@ -113,14 +140,13 @@ avg_stand_sit_t = mean(stand_sit_time);
 std_stand_sit_t = std(stand_sit_time);
 cov_stand_sit_t = std_stand_sit_t / avg_stand_sit_t;
 
-%Compute Trunk Flex during sit to stand
-
-trflex_si_st = zeros(1,num_reps);
-for k=1:num_reps
+%Compute Trunk Flex during sit-to-stand
+trflex_si_st = zeros(1,num_reps-1);
+for k=1:num_reps-1
     if k==1 
     trflex_si_st(k) = min(ch_theta(1:locs_stand(1)));
     end
-    if 1 < k && k <= num_reps
+    if 1 < k && k < num_reps
     trflex_si_st(k) = min(ch_theta(locs_sit(k-1):locs_stand(k)));
     end
 end
@@ -130,7 +156,6 @@ std_trflex_si_st = std(trflex_si_st);
 cov_trflex_si_st = std_trflex_si_st / avg_trflex_si_st;
 
 %Band pass filter accel data
-
 % Apply high-pass butterworth filter thigh
 n = 3; % filter order 
 Wp = 5/(Fs/2); % defining cutoff frequency of 5 Hz in rad/samp
@@ -140,7 +165,7 @@ th_yaccelHP = filtfilt(b,a,thigh_accel(:,2));
 th_zaccelHP = filtfilt(b,a,thigh_accel(:,3)); 
 
 n = 3; % filter order 
-Wp = 30/(Fs/2); % defining cutoff frequency of 30 Hz in rad/samp
+Wp = 20/(Fs/2); % defining cutoff frequency of 20 Hz in rad/samp
 [b,a] = butter(n,Wp,'low'); 
 th_xaccelHP = filtfilt(b,a,th_xaccelHP); 
 th_yaccelHP = filtfilt(b,a,th_yaccelHP); 
@@ -148,45 +173,69 @@ th_zaccelHP = filtfilt(b,a,th_zaccelHP);
 
 %Find inflection points to identify ranges of interest
 diff_az = diff(th_zaccel); %find deriv of accel_z 
-[pks_tstand,locs_tstand] = findpeaks(diff_az); %peak represents inflec point sit to stand
+[pks_tstand,locs_tstand] = findpeaks(diff_az); %peak represents inflec point si-st
 
 %find inflection points from stand to sit
 [pks_tsit,locs_tsit] = findpeaks(-diff_az); %peak represents inflec point st-si
 
 %Find peak thigh accel (magnitude) of the si-st transition
+pk_si_st1_vacc = zeros(1,num_reps);
+pk_si_st1_APacc = zeros(1,num_reps);
+pk_si_st1_MLacc = zeros(1,num_reps);
 
-pk_si_st_vacc = zeros(1,num_reps);
-pk_si_st_APacc = zeros(1,num_reps);
-pk_si_st_MLacc = zeros(1,num_reps);
+pk_si_st2_vacc = zeros(1,num_reps-1);
+pk_si_st2_APacc = zeros(1,num_reps-1);
+pk_si_st2_MLacc = zeros(1,num_reps-1);
 
 abs_th_xaccelHP = abs(th_xaccelHP); %absolute value of HP filtered thigh signal
 abs_th_yaccelHP = abs(th_yaccelHP); 
 abs_th_zaccelHP = abs(th_zaccelHP); 
 
-for k=1:num_reps
+%Liftoff phase
+for k=1:num_reps-1
  if k==1
-    pk_si_st_vacc(k) = max(abs_th_zaccelHP(1:locs_tstand(k),1));
-    pk_si_st_APacc(k) = max(abs_th_yaccelHP(1:locs_tstand(k),1));
-    pk_si_st_MLacc(k) = max(abs_th_xaccelHP(1:locs_tstand(k),1));
+    pk_si_st1_vacc(k) = max(abs_th_zaccelHP(1:locs_tstand(k),1));
+    pk_si_st1_APacc(k) = max(abs_th_yaccelHP(1:locs_tstand(k),1));
+    pk_si_st1_MLacc(k) = max(abs_th_xaccelHP(1:locs_tstand(k),1));
  end
-if 1 < k && k <= (num_reps)
-    pk_si_st_vacc(k) = max(abs_th_zaccelHP(locs_sit(k-1):locs_tstand(k),1));
-    pk_si_st_APacc(k) = max(abs_th_yaccelHP(locs_sit(k-1):locs_tstand(k),1));
-    pk_si_st_MLacc(k) = max(abs_th_xaccelHP(locs_sit(k-1):locs_tstand(k),1));
+if 1 < k && k < num_reps
+    pk_si_st1_vacc(k) = max(abs_th_zaccelHP(locs_sit(k-1):locs_tstand(k),1));
+    pk_si_st1_APacc(k) = max(abs_th_yaccelHP(locs_sit(k-1):locs_tstand(k),1));
+    pk_si_st1_MLacc(k) = max(abs_th_xaccelHP(locs_sit(k-1):locs_tstand(k),1));
 end
 end
-
-pk_st_si_vacc = zeros(1,num_reps-1);
-pk_st_si_APacc = zeros(1,num_reps-1);
-pk_st_si_MLacc = zeros(1,num_reps-1);
-trflex_st_si = zeros(1,num_reps-1);
+%Midstand to stand phase
+for k=1:num_reps-1
+    pk_si_st2_vacc(k) = max(abs_th_zaccelHP(locs_tstand(k):locs_stand(k),1));
+    pk_si_st2_APacc(k) = max(abs_th_yaccelHP(locs_tstand(k):locs_stand(k),1));
+    pk_si_st2_MLacc(k) = max(abs_th_xaccelHP(locs_tstand(k):locs_stand(k),1));
+end
 
 %Find peak thigh accel (magnitude) of the st-si transition
+pk_st_si1_vacc = zeros(1,num_reps-1);
+pk_st_si1_APacc = zeros(1,num_reps-1);
+pk_st_si1_MLacc = zeros(1,num_reps-1);
+
+pk_st_si2_vacc = zeros(1,num_reps-1);
+pk_st_si2_APacc = zeros(1,num_reps-1);
+pk_st_si2_MLacc = zeros(1,num_reps-1);
+
 for k=1:(num_reps-1)
-    pk_st_si_vacc(k) = max(abs_th_zaccelHP(locs_tsit(k):locs_sit(k),1));
-    pk_st_si_APacc(k) = max(abs_th_yaccelHP(locs_tsit(k):locs_sit(k),1));
-    pk_st_si_MLacc(k) = max(abs_th_xaccelHP(locs_tsit(k):locs_sit(k),1));
-    trflex_st_si(k) = max(ch_theta(locs_tsit(k):locs_sit(k),1));
+    %Initiate st-si phase
+    pk_st_si1_vacc(k) = max(abs_th_zaccelHP(locs_stand(k):locs_tsit(k),1));
+    pk_st_si1_APacc(k) = max(abs_th_yaccelHP(locs_stand(k):locs_tsit(k),1));
+    pk_st_si1_MLacc(k) = max(abs_th_xaccelHP(locs_stand(k):locs_tsit(k),1));
+    
+    %Touchdown phase
+    pk_st_si2_vacc(k) = max(abs_th_zaccelHP(locs_tsit(k):locs_sit(k),1));
+    pk_st_si2_APacc(k) = max(abs_th_yaccelHP(locs_tsit(k):locs_sit(k),1));
+    pk_st_si2_MLacc(k) = max(abs_th_xaccelHP(locs_tsit(k):locs_sit(k),1));
+end
+
+%Compute peak trunk flexion during st-si
+trflex_st_si = zeros(1,num_reps-1);
+for k=1:(num_reps-1)
+trflex_st_si(k) = min(ch_theta(locs_stand(k):locs_sit(k),1));
 end
 
 %Calc avg/sd/cv of st-si trunk flex
@@ -197,41 +246,73 @@ cov_trflex_st_si = std_trflex_st_si / avg_trflex_st_si;
 %Avg, Std and CV of metrics
 
 %Si-st
-avg_peak_vacc_si_st = mean(pk_si_st_vacc);
-std_peak_vacc_si_st = std(pk_si_st_vacc);
-cov_peak_vacc_si_st =  std_peak_vacc_si_st / avg_peak_vacc_si_st;
+avg_peak_vacc_si_st1 = mean(pk_si_st1_vacc);
+std_peak_vacc_si_st1 = std(pk_si_st1_vacc);
+cov_peak_vacc_si_st1 =  std_peak_vacc_si_st1 / avg_peak_vacc_si_st1;
 
-avg_peak_MLacc_si_st = mean(pk_si_st_MLacc);
-std_peak_MLacc_si_st = std(pk_si_st_MLacc);
-cov_peak_MLacc_si_st =  std_peak_MLacc_si_st / avg_peak_MLacc_si_st;
+avg_peak_vacc_si_st2 = mean(pk_si_st2_vacc);
+std_peak_vacc_si_st2 = std(pk_si_st2_vacc);
+cov_peak_vacc_si_st2 =  std_peak_vacc_si_st2 / avg_peak_vacc_si_st2;
 
-avg_peak_APacc_si_st = mean(pk_si_st_APacc);
-std_peak_APacc_si_st = std(pk_si_st_APacc);
-cov_peak_APacc_si_st =  std_peak_APacc_si_st / avg_peak_APacc_si_st;
+avg_peak_MLacc_si_st1 = mean(pk_si_st1_MLacc);
+std_peak_MLacc_si_st1 = std(pk_si_st1_MLacc);
+cov_peak_MLacc_si_st1 =  std_peak_MLacc_si_st1 / avg_peak_MLacc_si_st1;
+
+avg_peak_MLacc_si_st2 = mean(pk_si_st2_MLacc);
+std_peak_MLacc_si_st2 = std(pk_si_st2_MLacc);
+cov_peak_MLacc_si_st2 =  std_peak_MLacc_si_st2 / avg_peak_MLacc_si_st2;
+
+avg_peak_APacc_si_st1 = mean(pk_si_st1_APacc);
+std_peak_APacc_si_st1 = std(pk_si_st1_APacc);
+cov_peak_APacc_si_st1 =  std_peak_APacc_si_st1 / avg_peak_APacc_si_st1;
+
+avg_peak_APacc_si_st2 = mean(pk_si_st2_APacc);
+std_peak_APacc_si_st2 = std(pk_si_st2_APacc);
+cov_peak_APacc_si_st2 =  std_peak_APacc_si_st2 / avg_peak_APacc_si_st2;
 
 %St-si
-avg_peak_vacc_st_si = mean(pk_st_si_vacc);
-std_peak_vacc_st_si = std(pk_st_si_vacc);
-cov_peak_vacc_st_si =  std_peak_vacc_st_si/ avg_peak_vacc_st_si;
+avg_peak_vacc_st_si1 = mean(pk_st_si1_vacc);
+std_peak_vacc_st_si1 = std(pk_st_si1_vacc);
+cov_peak_vacc_st_si1 =  std_peak_vacc_st_si1/ avg_peak_vacc_st_si1;
 
-avg_peak_MLacc_st_si = mean(pk_st_si_MLacc);
-std_peak_MLacc_st_si = std(pk_st_si_MLacc);
-cov_peak_MLacc_st_si =  std_peak_MLacc_st_si/ avg_peak_MLacc_st_si;
+avg_peak_vacc_st_si2 = mean(pk_st_si2_vacc);
+std_peak_vacc_st_si2 = std(pk_st_si2_vacc);
+cov_peak_vacc_st_si2 =  std_peak_vacc_st_si2/ avg_peak_vacc_st_si2;
 
-avg_peak_APacc_st_si = mean(pk_st_si_APacc);
-std_peak_APacc_st_si = std(pk_st_si_APacc);
-cov_peak_APacc_st_si =  std_peak_APacc_st_si/ avg_peak_APacc_st_si;
+avg_peak_MLacc_st_si1 = mean(pk_st_si1_MLacc);
+std_peak_MLacc_st_si1 = std(pk_st_si1_MLacc);
+cov_peak_MLacc_st_si1 =  std_peak_MLacc_st_si1/ avg_peak_MLacc_st_si1;
 
-% Define table to report results
+avg_peak_MLacc_st_si2 = mean(pk_st_si2_MLacc);
+std_peak_MLacc_st_si2 = std(pk_st_si2_MLacc);
+cov_peak_MLacc_st_si2 =  std_peak_MLacc_st_si2/ avg_peak_MLacc_st_si2;
+
+avg_peak_APacc_st_si1 = mean(pk_st_si1_APacc);
+std_peak_APacc_st_si1 = std(pk_st_si1_APacc);
+cov_peak_APacc_st_si1 =  std_peak_APacc_st_si1/ avg_peak_APacc_st_si1;
+
+avg_peak_APacc_st_si2 = mean(pk_st_si2_APacc);
+std_peak_APacc_st_si2 = std(pk_st_si2_APacc);
+cov_peak_APacc_st_si2 =  std_peak_APacc_st_si2/ avg_peak_APacc_st_si2;
+
+%Define table to report results
 h1 = {'num_reps','avg_trflex_si_st','cov_trflex_si_st','avg_trflex_st_si','cov_trflex_st_si','avg_sit_stand_t','cov_sit_stand_t',...
-    'avg_stand_sit_t','cov_stand_sit_t','avg_peak_vacc_si_st','cov_peak_vacc_si_st','avg_peak_vacc_st_si','cov_peak_vacc_st_si',...
-    'avg_peak_MLacc_si_st', 'cov_peak_MLacc_si_st', 'avg_peak_MLacc_st_si','cov_peak_MLacc_st_si', 'avg_peak_APacc_si_st', 'cov_peak_APacc_si_st'};
+    'avg_stand_sit_t','cov_stand_sit_t','avg_peak_vacc_si_st1','cov_peak_vacc_si_st1','avg_peak_vacc_si_st2','cov_peak_vacc_si_st2',...
+    'avg_peak_vacc_st_si1','cov_peak_vacc_st_si1','avg_peak_vacc_st_si2','cov_peak_vacc_st_si2',...
+    'avg_peak_MLacc_si_st1','cov_peak_MLacc_si_st1','avg_peak_MLacc_si_st2','cov_peak_MLacc_si_st2',...
+    'avg_peak_MLacc_st_si1','cov_peak_MLacc_st_si1','avg_peak_MLacc_st_si2','cov_peak_MLacc_st_si2',...
+    'avg_peak_APacc_si_st1','cov_peak_APacc_si_st1','avg_peak_APacc_si_st2','cov_peak_APacc_si_st2',...
+    'avg_peak_APacc_st_si1','cov_peak_APacc_st_si1', 'avg_peak_APacc_st_si2','cov_peak_APacc_st_si2'};
 
-mets = {num_reps,avg_trflex_si_st,cov_trflex_si_st,avg_trflex_st_si,cov_trflex_st_si,avg_sit_stand_t,cov_sit_stand_t,...
-    avg_stand_sit_t,cov_stand_sit_t,avg_peak_vacc_si_st,cov_peak_vacc_si_st,avg_peak_vacc_st_si,cov_peak_vacc_st_si,...
-    avg_peak_MLacc_si_st, cov_peak_MLacc_si_st, avg_peak_MLacc_st_si,cov_peak_MLacc_st_si, avg_peak_APacc_si_st, cov_peak_APacc_si_st};
+sum_mets = {num_reps,avg_trflex_si_st,cov_trflex_si_st,avg_trflex_st_si,cov_trflex_st_si,avg_sit_stand_t,cov_sit_stand_t,...
+    avg_stand_sit_t,cov_stand_sit_t,avg_peak_vacc_si_st1,cov_peak_vacc_si_st1,avg_peak_vacc_si_st2,cov_peak_vacc_si_st2,...
+    avg_peak_vacc_st_si1,cov_peak_vacc_st_si1,avg_peak_vacc_st_si2,cov_peak_vacc_st_si2,...
+    avg_peak_MLacc_si_st1,cov_peak_MLacc_si_st1,avg_peak_MLacc_si_st2,cov_peak_MLacc_si_st2,...
+    avg_peak_MLacc_st_si1,cov_peak_MLacc_st_si1,avg_peak_MLacc_st_si2,cov_peak_MLacc_st_si2,...
+    avg_peak_APacc_si_st1,cov_peak_APacc_si_st1,avg_peak_APacc_si_st2,cov_peak_APacc_si_st2,...
+    avg_peak_APacc_st_si1,cov_peak_APacc_st_si1, avg_peak_APacc_st_si2,cov_peak_APacc_st_si2};
 
-T1 = cell2table(mets,'VariableNames',h1);
+T1 = cell2table(sum_mets,'VariableNames',h1);
 
 % Write table to command window
 disp(T1);
@@ -361,4 +442,7 @@ end
 
 
 end
+
+
+
 
